@@ -4,6 +4,7 @@ import Apps from '@/components/Apps';
 import Programming from '@/components/Programming';
 import Update from '@/components/Update';
 import Settings from '@/components/Settings';
+import Python from '@/components/Python';
 import BadGateway from '@/components/BadGateway';
 
 
@@ -38,14 +39,20 @@ export default new Router({
       component: Settings
     },
     {
+      path: '/python',
+      name: 'Python',
+      props: { page: 5 },
+      component: Python
+    },
+    {
       path: '/404',
       name: 'BadGateway',
-      props: { page: 5 },
+      props: { page: 6 },
       component: BadGateway
     },
     {
       path: '*',
-      props: { page: 5 },
+      props: { page: 6 },
       redirect: '/404'
     }
   ]

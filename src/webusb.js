@@ -15,6 +15,9 @@ let current_message_id = 0;
 let requests = {};
 let stdout_callback;
 
+let selected_mode;
+let active_mode;
+
 let MAX_RETRIES = 3;
 
 import * as $ from 'jquery';
@@ -61,42 +64,47 @@ function rewritemessageid(buffer) {
 }
 
 export function send_buffer(buffer, message_id, return_string = true) {
-    let resolve, reject;
-    let promise = new Promise((_resolve, _reject) => { resolve = _resolve; reject = _reject; });
-    let request = {
-        buffer, // For retransmit
-        resolve: (data) => {
-            if (return_string) {
-                if (data.byteLength === 0) {
-                    resolve("");
-                    return true;
-                } else {
-                    let textdecoder = new TextDecoder("ascii");
-                    resolve(textdecoder.decode(data));
-                    return true
-                }
-            } else {
-                resolve(data);
-                return true;
-            }
-        },
-        reject: (reason, immediate_reject = false) => {
-            if (!immediate_reject && request.retries <= MAX_RETRIES) {
-                request.retries++;
-                console.log(buffer);
-                rewritemessageid(buffer);
-                device.transferOut(5, buffer);
-                return false;
-            } else {
-                reject(reason);
-                return true;
-            }
-        },
-        retries: 0 // Number of times this request has been retransmitted already
-    };
-    requests[message_id] = request;
-    device.transferOut(5, buffer);
-    return promise;
+	let resolve, reject;
+	let promise = new Promise((_resolve, _reject) => { resolve = _resolve; reject = _reject; });
+	let request = {
+		buffer, // For retransmit
+		resolve: (data) => {
+			if (return_string) {
+				if (data.byteLength === 0) {
+					resolve("");
+					return true;
+				} else {
+					let textdecoder = new TextDecoder("ascii");
+					resolve(textdecoder.decode(data));
+					return true
+				}
+			} else {
+				resolve(data);
+				return true;
+			}
+		},
+		reject: (reason, immediate_reject = false) => {
+			if (!immediate_reject && request.retries <= MAX_RETRIES) {
+				request.retries++;
+				console.log(buffer);
+				rewritemessageid(buffer);
+				device.transferOut(5, buffer);
+				return false;
+			} else {
+				reject(reason);
+				return true;
+			}
+		},
+		retries: 0 // Number of times this request has been retransmitted already
+	};
+	requests[message_id] = request;
+	headerbuf = null;
+	device.transferOut(5, buffer);
+    if (selected_mode === 1) {
+		return promise;
+    } else {
+		return resetEsp32ToWebUSB(4, 1).then(promise);
+	}
 }
 
 export function fetch_dir(dir_name) {
@@ -176,6 +184,22 @@ export function runfile(file_path) {
     }
     let { buffer, message_id } = buildpacketWithFilename(0, 0, file_path);
     return send_buffer(buffer, message_id);
+}
+
+export function appFSboot(file_path) {
+    let { buffer, message_id } = buildpacketWithFilename(0, 3, file_path);
+    return send_buffer(buffer, message_id)
+		.then(() => {
+			active_mode = undefined;
+			setBaudrate(4, 115200)
+			.then(() => {
+				selected_mode = 0;
+				active_mode = 0;
+				console.log("active_mode: " + active_mode);
+			})
+			;
+		}
+	);
 }
 
 export function duplicatefile(source, destination) {
@@ -325,11 +349,16 @@ export function registerstdout(func) {
 
 
 export function writetostdin(stdin) {
-    let { buffer, message_id } = buildpacket(stdin.length, 2);
-    for (let i = 0; i < stdin.length; i++) {
-        buffer[packetheadersize + i] = stdin.charCodeAt(i);
-    }
-    return send_buffer(buffer, message_id);
+	const
+		encoded = new TextEncoder().encode(stdin)
+		;
+
+	console.log("writetostdin: " + stdin);
+	if (selected_mode !== 0) {
+		return appFSboot("python").then(() => device.transferOut(5, encoded));
+	} else {
+		return device.transferOut(5, encoded);
+	}
 }
 
 let headerbuf = null;
@@ -345,44 +374,59 @@ let readdata = () => {
     device.transferIn(5, 64).then(result => {
         //console.log("Received buffer")
         //console.log(result.data.buffer);
-        let buffer = result.data.buffer;
-        if (headerbuf != null) {
-            buffer = _appendBuffer(headerbuf, buffer);
-        }
-        let parsedbytes = 0;
-        let totalbytes = buffer.byteLength;
-        //console.log("Complete buffer")
-        //console.log(buffer);
-        while (parsedbytes != totalbytes) {
-            if (received == size) { //Should read a new packet header
-                if ((totalbytes - parsedbytes) < 12) {
-                    headerbuf = new Uint8Array(buffer, parsedbytes);
-                    break; //Not full packet header
-                } else {
-                    headerbuf = null;
-                }       
-                if (parsepacketheader(buffer.slice(parsedbytes, parsedbytes + 12))) {
-                    payload = new ArrayBuffer(size);
-                    console.log("Command: "+command+" Size: "+size+" id: "+messageid_recv);
-                    if (size == 0) {
-                        handlePacket(command, messageid_recv, payload);
-                    }
-                } else {
-                    console.log("Error in packet header");
-                    received = 0;
-                    size = 0;
-                }
-                parsedbytes += 12;
-            } else {
-                let sizetocopy = Math.min(size, totalbytes - parsedbytes, size - received);
-                new Uint8Array(payload, received, size - received).set(new Uint8Array(buffer, parsedbytes, sizetocopy));
-                parsedbytes += sizetocopy;
-                received += sizetocopy;
-                //console.log("Transfer status: "+received+"/"+size);
-                if (received == size) {
-                    handlePacket(command, messageid_recv, payload);
-                }
+        switch (active_mode) {
+            case 0: {
+				const decoder = new TextDecoder();
+				const message = decoder.decode(result.data);
+				console.log(message);
+				stdout_callback(message);
+                break;
             }
+            case 1: {
+                let buffer = result.data.buffer;
+                if (headerbuf != null) {
+                    buffer = _appendBuffer(headerbuf, buffer);
+                }
+                let parsedbytes = 0;
+                let totalbytes = buffer.byteLength;
+                //console.log("Complete buffer")
+                //console.log(buffer);
+                while (parsedbytes != totalbytes) {
+                    if (received == size) { //Should read a new packet header
+                        if ((totalbytes - parsedbytes) < 12) {
+                            headerbuf = new Uint8Array(buffer, parsedbytes);
+                            break; //Not full packet header
+                        } else {
+                            headerbuf = null;
+                        }       
+                        if (parsepacketheader(buffer.slice(parsedbytes, parsedbytes + 12))) {
+                            payload = new ArrayBuffer(size);
+                            console.log("Command: "+command+" Size: "+size+" id: "+messageid_recv);
+                            if (size == 0) {
+                                handlePacket(command, messageid_recv, payload);
+                            }
+                        } else {
+                            console.log("Error in packet header");
+                            received = 0;
+                            size = 0;
+                        }
+                        parsedbytes += 12;
+                    } else {
+                        let sizetocopy = Math.min(size, totalbytes - parsedbytes, size - received);
+                        new Uint8Array(payload, received, size - received).set(new Uint8Array(buffer, parsedbytes, sizetocopy));
+                        parsedbytes += sizetocopy;
+                        received += sizetocopy;
+                        //console.log("Transfer status: "+received+"/"+size);
+                        if (received == size) {
+                            handlePacket(command, messageid_recv, payload);
+                        }
+                    }
+                }
+                break;
+            }
+            default:
+                //console.log("no active mode");
+                break;
         }
         readdata();
     }, error => {
@@ -409,6 +453,7 @@ function connect_check() {
         connect_resolves = [];
     }
 }
+/*
 setInterval(connect_check, 500);
 setInterval(function () {
     if (device.opened) {
@@ -416,7 +461,7 @@ setInterval(function () {
             sendHeartbeat();
     }
 }, 500);
-
+*/
 
 
 export function on_connect() {
@@ -448,6 +493,61 @@ async function readserial() {
     }
 }
 
+function sendControl(ifIndex, request, value) {
+    return device.controlTransferOut(
+        {
+            requestType: 'class',
+            recipient: 'interface',
+            request: request,
+            value: value,
+            index: ifIndex
+        }
+    ).then(result => {
+        console.log(result);
+    });
+}
+
+function sendState(ifIndex, state) {
+    return sendControl(ifIndex, 0x22, state);
+}
+
+function resetEsp32(ifIndex, bootloader_mode = false) {
+    return sendControl(ifIndex, 0x23, bootloader_mode ? 0x01 : 0x00);
+}
+
+function setBaudrate(ifIndex, baudrate) {
+    console.log("Baudrate for " + ifIndex + " set to " + baudrate);
+    return sendControl(ifIndex, 0x24, Math.floor(baudrate / 100));
+}
+
+function setMode(ifIndex, mode) {
+	active_mode = undefined;
+    console.log("active_mode undefined");
+    selected_mode = mode;
+    return sendControl(ifIndex, 0x25, mode)
+		.then(() => { active_mode = mode; });
+}
+
+function resetEsp32ToWebUSB(ifIndex, webusb_mode) {
+    return setMode(ifIndex, webusb_mode)
+	.then(() => resetEsp32(ifIndex))
+	.then(() => {
+		if (webusb_mode > 0) {
+			setBaudrate(ifIndex, 921600)				;
+		} else {
+			setBaudrate(ifIndex, 115200);
+		}
+	})
+	.then(() => {
+		setTimeout(() => {
+			active_mode = webusb_mode;
+			console.log("active_mode: " + active_mode);
+		}, 2000);
+	})
+	;
+}
+
+
 export function connect() {
     command = 0;
     size = 0;
@@ -456,7 +556,7 @@ export function connect() {
     messageid_recv = 0;
     current_message_id = 1;
     requests = {};
-    let interfaceid = 4
+    let ifIndex = 4
 
     return navigator.usb.requestDevice({ filters: [{ vendorId: 0x16d0 }] })
         .then(selectedDevice => {
@@ -465,37 +565,8 @@ export function connect() {
             return device.open(); // Begin a session.
         })
         .then(() => device.selectConfiguration(1)) // Select configuration #1 for the device.
-        .then(() => device.claimInterface(interfaceid)) // Request exclusive control over interface #2.
-        .then(() => device.controlTransferOut({
-            requestType: 'class',
-            recipient: 'interface',
-            request: 0x22,
-            value: 0x01,
-            index: interfaceid
-        }))
-        .then(() => device.controlTransferOut({
-            requestType: 'class',
-            recipient: 'interface',
-            request: 0x25,
-            value: 0x01,
-            index: interfaceid
-        })) // Ready to receive data
-        // .then(() => device.controlTransferOut({
-        //     requestType: 'class',
-        //     recipient: 'interface',
-        //     request: 0x23,
-        //     value: 0x00,
-        //     index: interfaceid
-        // })) // Ready to receive data
-        .then(() => device.controlTransferOut({
-            requestType: 'class',
-            recipient: 'interface',
-            request: 0x24,
-            value: 9216,
-            index: interfaceid
-        })) // Ready to receive data
-        
-        .then(() => {
-            readdata();
-        });
+        .then(() => device.claimInterface(ifIndex)) // Request exclusive control over interface #2.
+        .then(() => sendState(ifIndex, 1))
+        .then(() => resetEsp32ToWebUSB(ifIndex, 1))
+        .then(() => readdata());
 }

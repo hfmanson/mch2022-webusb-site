@@ -301,17 +301,7 @@ export default {
       }
     },
     runfile_ui: async () => {
-      if(component.content_editor !== component.content_original) {
-        await savetextfile(component.editorfilename, component.content_editor);
-        component.content_original = component.content_editor;
-      }
-      let import_name = component.editorfilename.replace('/flash/', '/').replace('/__init__.py', '').replace('.py', '')
-      if (import_name.length > 1 && import_name[0] === '/') {
-        import_name = import_name.substr(1);
-      }
-      import_name = import_name.replace('/', '.')
-
-      runfile(import_name);
+      writetostdin("\x01" + component.content_editor + "\x04")
     },
     info() {
 

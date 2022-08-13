@@ -133,7 +133,7 @@
     window.VueMarkdown = VueMarkdown;
 
     let component = undefined;
-    debugger;
+    //debugger;
 
     export default {
         name: 'Apps',
