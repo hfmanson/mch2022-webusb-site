@@ -319,16 +319,9 @@ export default {
       show: true,
       files: [
         {
-          text: 'flash',
-          full_path: '/flash',
+          text: '/',
+          full_path: '/',
           icon: 'fas fa-microchip',
-          is_dir: true,
-          children: [{text:'Click parent to refresh', icon: 'none', isDummy: true}]
-        },
-        {
-          text: 'sdcard',
-          full_path: '/sdcard',
-          icon: 'fas fa-sd-card',
           is_dir: true,
           children: [{text:'Click parent to refresh', icon: 'none', isDummy: true}]
         }

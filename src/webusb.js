@@ -1,6 +1,9 @@
 /**
  * Created by Tom on 5/27/2020.
  */
+
+ /* eslint-disable */
+
 export let device = { opened: false };
 let command;
 let size = 0;
@@ -15,8 +18,11 @@ let current_message_id = 0;
 let requests = {};
 let stdout_callback;
 
-let selected_mode;
-let active_mode;
+let selected_mode = 0;
+let active_mode = 0;
+
+let capture;
+let captureData = "";
 
 let MAX_RETRIES = 3;
 
@@ -112,15 +118,19 @@ export function fetch_dir(dir_name) {
     if (dir_name === undefined || dir_name === '') {
         dir_name = '/';
     }
+/*
     let { buffer, message_id } = buildpacket(dir_name.length + 1, 4096);
     for (let i = 0; i < dir_name.length; i++) {
         buffer[packetheadersize + i] = dir_name.charCodeAt(i);
     }
     buffer[packetheadersize + dir_name.length] = 0;
     return send_buffer(buffer, message_id, true);
+*/
+	return doPython('import os,sys,json;\njson.dump("' + dir_name + '\\n" + "\\n".join(list(map(lambda tuple: ("d" if tuple[1] & 0x4000 else "f") + tuple[0], list(os.ilistdir("' + dir_name + '"))))), sys.stdout)');
 }
 
 export function readfile(file_name, return_string = true) {
+/*
     let { buffer, message_id } = buildpacketWithFilename(0, 4097, file_name);
     return send_buffer(buffer, message_id, return_string).then((contents) => {
         if (contents === 'Can\'t open file') {
@@ -128,6 +138,9 @@ export function readfile(file_name, return_string = true) {
         }
         return contents;
     });
+*/
+	const name = file_name.slice(1).split(".")[0].replaceAll("/", ".");
+	return doPython('import os,sys,json;\nf = open("' + file_name + '");__name__=' + JSON.stringify(name) + ';__file__=' + JSON.stringify(file_name) + ';y = f.read();f.close();json.dump(y, sys.stdout)');
 }
 
 export function createfile(dir_name) {
@@ -186,7 +199,7 @@ export function runfile(file_path) {
     return send_buffer(buffer, message_id);
 }
 
-export function appFSboot(file_path) {
+export async function appFSboot(file_path) {
     let { buffer, message_id } = buildpacketWithFilename(0, 3, file_path);
     return send_buffer(buffer, message_id)
 		.then(() => {
@@ -249,12 +262,15 @@ export function copyfile(source, destination) {
 
 export function savetextfile(filename, contents) {
     console.log(filename);
+/*
     let { buffer, message_id } = buildpacketWithFilename(contents.length, 4098, filename);
     for (let i = 0; i < contents.length; i++) {
         buffer[packetheadersize + filename.length + 1 + i] = contents.charCodeAt(i);
     }
 
     return send_buffer(buffer, message_id);
+*/
+	return doPython('import json;f = open("' + filename + '","w");y=f.write(' + JSON.stringify(contents) + ');f.close();json.dump(y, sys.stdout)');
 }
 
 export function savefile(filename, contents) {
@@ -370,6 +386,23 @@ var _appendBuffer = function(buffer1, buffer2) {
     return tmp.buffer;
 };
 
+async function doPython(pythoncode) {
+	const
+		executor = (resolutionFunc, rejectionFunc) => {
+			capture = function (data) {
+				const parsed = JSON.parse(data);
+				console.log(parsed);
+				resolutionFunc(parsed);
+			};
+			captureData = "";
+			writetostdin("\x01" + pythoncode + "\x04");
+		}
+		;
+	return new Promise(executor);
+}
+
+window.doPython = doPython;
+
 let readdata = () => {
     device.transferIn(5, 64).then(result => {
         //console.log("Received buffer")
@@ -379,7 +412,17 @@ let readdata = () => {
 				const decoder = new TextDecoder();
 				const message = decoder.decode(result.data);
 				console.log(message);
-				stdout_callback(message);
+				if (capture) {
+					captureData += message;
+					console.log(captureData);
+					const result = /OK(.*)\x04(.*)\x04/s.exec(captureData);
+					if (result) {
+						capture(result[1]);
+						capture = undefined;
+					}
+				} else {
+					stdout_callback(message);
+				}
                 break;
             }
             case 1: {
@@ -567,6 +610,9 @@ export function connect() {
         .then(() => device.selectConfiguration(1)) // Select configuration #1 for the device.
         .then(() => device.claimInterface(ifIndex)) // Request exclusive control over interface #2.
         .then(() => sendState(ifIndex, 1))
-        .then(() => resetEsp32ToWebUSB(ifIndex, 1))
+//        .then(() => resetEsp32ToWebUSB(ifIndex, 1))
+//		.then(() => appFSboot("python"))
+		.then(() => setMode(ifIndex, 0))
+		.then(() => setBaudrate(ifIndex, 115200))
         .then(() => readdata());
 }
